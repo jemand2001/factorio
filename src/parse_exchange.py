@@ -20,6 +20,10 @@ def type_parser(*types):
     return decorator
 
 
+def get_parser(type_, self):
+    return partial(type_parsers[type_], self)
+
+
 prototype_pollution = {
     "enabled": bool,
     "diffusion_ratio": double,
@@ -116,6 +120,7 @@ class ExchangeStringParser:
     def __init__(self, exchange_string: Union[str, bytes]):
         if exchange_string[:3] != '>>>' or exchange_string[-3:] != '<<<':
             raise SyntaxError('invalid start or end')
+        self.original = exchange_string
         exchange_string = exchange_string[3:-3].replace('\n', '')
         self.value = decompress(
             decode(
@@ -146,17 +151,21 @@ class ExchangeStringParser:
 
     @type_parser(int)
     def parse_int(self, optimized=True) -> int:
-        if self.current == 255 or not optimized:
+        if not optimized:
+            return int.from_bytes(self.get_and_increment(4), 'little')
+        if res := self.get_and_increment() == 255:
             return int.from_bytes(self.get_and_increment(4), 'little')
         else:
-            return self.get_and_increment()
+            return res
 
     @type_parser(short)
     def parse_short(self, optimized=True) -> short:
-        if self.current == 255 or not optimized:
+        if not optimized:
+            return short.from_bytes(self.get_and_increment(2), 'little')
+        if res := self.get_and_increment() == 255:
             return short.from_bytes(self.get_and_increment(2), 'little')
         else:
-            return short(self.get_and_increment())
+            return short(res)
 
     @type_parser(bytes)
     def parse_bytes(self, length):
@@ -171,10 +180,10 @@ class ExchangeStringParser:
         return float.fromhex(''.join(hex(i)[2:] for i in self.parse_bytes(8)))
 
     @type_parser(Dict[K, V])
-    def parse_dict(self, parse_key: Callable[[T], K], parse_value: Callable[[T], V]) -> Mapping[K, V]:
+    def parse_dict(self, parse_key: Callable[[], K], parse_value: Callable[[], V]) -> Mapping[K, V]:
         length = abs(self.parse_int(False))
         return {
-            parse_key(self): parse_value(self)
+            parse_key(): parse_value()
             for _ in range(length)
         }
 
@@ -205,7 +214,7 @@ class ExchangeStringParser:
         return {
             'terrain_segmentation': self.parse_byte(),
             'water': self.parse_byte(),
-            'autoplace_controls': self.parse_dict(type_parsers[str], partial(self.parse_bytes, 3)),
+            'autoplace_controls': self.parse_dict(get_parser(str, self), partial(get_parser(bytes, self), 3)),
             'TODO': self.parse_bytes(2),
             'seed': self.parse_int(False),
             'width': self.parse_int(False),
@@ -247,3 +256,6 @@ class ExchangeStringParser:
 
     def __getitem__(self, item):
         return self.value[item]
+
+    def __repr__(self):
+        return f"ExchangeStringParser('{self.original}')"
